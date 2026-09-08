@@ -22,6 +22,44 @@ const INITIAL_STATUS: SystemStatus = {
   database: 'healthy',
 };
 
+// Dedicated female voice selection across Windows (Edge), Chrome, and Safari
+const FEMALE_VOICE_NAMES = [
+  'Microsoft Jenny',
+  'Microsoft Aria',
+  'Microsoft Ava',
+  'Microsoft Michelle',
+  'Microsoft Zira',
+  'Google US English',
+  'Google UK English Female',
+  'Samantha',
+  'Karen',
+  'Victoria',
+  'Moira',
+  'Fiona',
+];
+
+const MALE_VOICE_KEYWORDS = ['david', 'guy', 'mark', 'george', 'ryan', 'male'];
+
+function selectConsistentFemaleVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
+  if (!voices || voices.length === 0) return null;
+
+  // 1. Try prioritized female names
+  for (const name of FEMALE_VOICE_NAMES) {
+    const match = voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes(name.toLowerCase()));
+    if (match) return match;
+  }
+
+  // 2. Try any English voice that is not explicitly male
+  const femaleCandidate = voices.find(v => {
+    if (!v.lang.startsWith('en')) return false;
+    const lower = v.name.toLowerCase();
+    const isExplicitMale = MALE_VOICE_KEYWORDS.some(k => lower.includes(k));
+    return !isExplicitMale;
+  });
+
+  return femaleCandidate || voices.find(v => v.lang.startsWith('en')) || voices[0] || null;
+}
+
 // Cross-browser SpeechRecognition
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const SpeechRecognitionAPI = typeof window !== 'undefined'
@@ -32,7 +70,7 @@ const SpeechRecognitionAPI = typeof window !== 'undefined'
 // ─── Page ─────────────────────────────────────────────────────────────────
 /**
  * Receptionist — full-screen kiosk UI for Aria Kitchen AI Receptionist.
- * Features real Web Speech API input + SpeechSynthesis voice response.
+ * Features real Web Speech API input + consistent female SpeechSynthesis voice response.
  */
 export default function Receptionist() {
   const [convState, setConvState] = useState<ConversationState>('idle');
@@ -45,6 +83,7 @@ export default function Receptionist() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const finalTextRef   = useRef<string>('');
+  const femaleVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
 
   // ─── State label shown below avatar ──────────────────────────────────
   const STATE_SUBTITLE: Record<ConversationState, string> = {
@@ -56,7 +95,7 @@ export default function Receptionist() {
     staff_assistance: 'A team member will be with you shortly.',
   };
 
-  // ─── Initial Health Check ─────────────────────────────────────────────
+  // ─── Initial Health Check & Voice Preloading ───────────────────────────
   useEffect(() => {
     api.health()
       .then(res => {
@@ -73,6 +112,23 @@ export default function Receptionist() {
           voice: 'error',
         });
       });
+
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      const updateVoice = () => {
+        const voices = window.speechSynthesis.getVoices();
+        const chosen = selectConsistentFemaleVoice(voices);
+        if (chosen) {
+          femaleVoiceRef.current = chosen;
+        }
+      };
+
+      updateVoice();
+      window.speechSynthesis.onvoiceschanged = updateVoice;
+
+      return () => {
+        window.speechSynthesis.cancel();
+      };
+    }
   }, []);
 
   // ─── Add a message to transcript ──────────────────────────────────────
@@ -83,7 +139,7 @@ export default function Receptionist() {
     ]);
   }, []);
 
-  // ─── Speak Receptionist Answer (TTS) ──────────────────────────────────
+  // ─── Speak Receptionist Answer (Consistent Female Voice) ──────────────
   const speakResponse = useCallback((text: string) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       setConvState('idle');
@@ -93,20 +149,18 @@ export default function Receptionist() {
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.0;
-    utterance.pitch = 1.0;
+    utterance.pitch = 1.05; // warm, natural female pitch
 
-    const voices = window.speechSynthesis.getVoices();
-    const naturalVoice = voices.find(v =>
-      v.lang.startsWith('en') && (
-        v.name.includes('Natural') ||
-        v.name.includes('Neural') ||
-        v.name.includes('Google') ||
-        v.name.includes('Samantha') ||
-        v.name.includes('Zira')
-      )
-    ) || voices.find(v => v.lang.startsWith('en'));
+    let voice = femaleVoiceRef.current;
+    if (!voice) {
+      const voices = window.speechSynthesis.getVoices();
+      voice = selectConsistentFemaleVoice(voices);
+      if (voice) femaleVoiceRef.current = voice;
+    }
 
-    if (naturalVoice) utterance.voice = naturalVoice;
+    if (voice) {
+      utterance.voice = voice;
+    }
 
     utterance.onstart = () => setConvState('speaking');
     utterance.onend   = () => setConvState('idle');

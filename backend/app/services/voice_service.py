@@ -93,7 +93,7 @@ class VoiceSessionBridge:
             "session": {
                 "modalities": ["audio", "text"],
                 "instructions": RECEPTIONIST_SYSTEM_PROMPT,
-                "voice": "alloy",
+                "voice": "nova",
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "turn_detection": {
