@@ -1,4 +1,4 @@
-import { useState, useCallback, useId } from 'react';
+import { useState, useCallback, useId, useEffect, useRef } from 'react';
 import { ReceptionistAvatar }  from '../components/ReceptionistAvatar';
 import { ConversationPanel }   from '../components/ConversationPanel';
 import { VoiceIndicator }      from '../components/VoiceIndicator';
@@ -17,43 +17,63 @@ function makeId() {
 }
 
 const INITIAL_STATUS: SystemStatus = {
-  voice:    'connecting',
-  backend:  'connecting',
-  database: 'connecting',
+  voice:    'healthy',
+  backend:  'healthy',
+  database: 'healthy',
 };
+
+// Cross-browser SpeechRecognition
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const SpeechRecognitionAPI = typeof window !== 'undefined'
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition)
+  : null;
 
 // ─── Page ─────────────────────────────────────────────────────────────────
 /**
  * Receptionist — full-screen kiosk UI for Aria Kitchen AI Receptionist.
- *
- * Layout:
- *   ┌──────────────────────────────────┐
- *   │  Aria Kitchen (header)           │
- *   │  [Avatar]                        │
- *   │  Status pill                     │
- *   │  [Conversation transcript]       │
- *   │  [Mic button]                    │
- *   │  [Text fallback - dev only]      │
- *   │  [System status bar] (footer)    │
- *   └──────────────────────────────────┘
+ * Features real Web Speech API input + SpeechSynthesis voice response.
  */
 export default function Receptionist() {
   const [convState, setConvState] = useState<ConversationState>('idle');
   const [messages,  setMessages]  = useState<ConversationMessage[]>([]);
   const [systemStatus, setSystemStatus] = useState<SystemStatus>(INITIAL_STATUS);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [interimTranscript, setInterimTranscript] = useState<string>('');
 
   const descId = useId();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
+  const finalTextRef   = useRef<string>('');
 
   // ─── State label shown below avatar ──────────────────────────────────
   const STATE_SUBTITLE: Record<ConversationState, string> = {
     idle:             'How can I help you today?',
-    listening:        'Listening…',
+    listening:        'Listening… speak naturally',
     thinking:         'Let me check that for you…',
-    speaking:         'One moment…',
+    speaking:         'Speaking…',
     error:            'I\'m having trouble connecting right now.',
     staff_assistance: 'A team member will be with you shortly.',
   };
+
+  // ─── Initial Health Check ─────────────────────────────────────────────
+  useEffect(() => {
+    api.health()
+      .then(res => {
+        setSystemStatus({
+          backend: res.status === 'ok' ? 'healthy' : 'degraded',
+          database: 'healthy',
+          voice: SpeechRecognitionAPI ? 'healthy' : 'degraded',
+        });
+      })
+      .catch(() => {
+        setSystemStatus({
+          backend: 'error',
+          database: 'error',
+          voice: 'error',
+        });
+      });
+  }, []);
 
   // ─── Add a message to transcript ──────────────────────────────────────
   const addMessage = useCallback((role: ConversationMessage['role'], text: string) => {
@@ -63,30 +83,39 @@ export default function Receptionist() {
     ]);
   }, []);
 
-  // ─── Mic toggle (placeholder — real voice wired in voice integration step) ──
-  const handleMicClick = useCallback(async () => {
-    if (convState === 'listening') {
+  // ─── Speak Receptionist Answer (TTS) ──────────────────────────────────
+  const speakResponse = useCallback((text: string) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       setConvState('idle');
       return;
     }
 
-    // Ensure a session exists
-    if (!sessionId) {
-      try {
-        const { session_id } = await api.createSession();
-        setSessionId(session_id);
-        setSystemStatus({ voice: 'healthy', backend: 'healthy', database: 'healthy' });
-      } catch {
-        setConvState('error');
-        setSystemStatus(s => ({ ...s, backend: 'error' }));
-        return;
-      }
-    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
 
-    setConvState('listening');
-  }, [convState, sessionId]);
+    const voices = window.speechSynthesis.getVoices();
+    const naturalVoice = voices.find(v =>
+      v.lang.startsWith('en') && (
+        v.name.includes('Natural') ||
+        v.name.includes('Neural') ||
+        v.name.includes('Google') ||
+        v.name.includes('Samantha') ||
+        v.name.includes('Zira')
+      )
+    ) || voices.find(v => v.lang.startsWith('en'));
 
-  // ─── Text fallback send ────────────────────────────────────────────────
+    if (naturalVoice) utterance.voice = naturalVoice;
+
+    utterance.onstart = () => setConvState('speaking');
+    utterance.onend   = () => setConvState('idle');
+    utterance.onerror = () => setConvState('idle');
+
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  // ─── Send Text (Both Voice & Text Fallback) ───────────────────────────
   const handleTextSend = useCallback(async (text: string) => {
     if (!text.trim()) return;
 
@@ -99,7 +128,7 @@ export default function Receptionist() {
         const { session_id } = await api.createSession();
         setSessionId(session_id);
         sid = session_id;
-        setSystemStatus({ voice: 'healthy', backend: 'healthy', database: 'healthy' });
+        setSystemStatus(s => ({ ...s, backend: 'healthy' }));
       } catch {
         setConvState('error');
         addMessage('system', 'Unable to reach the restaurant system. Please ask a staff member.');
@@ -111,12 +140,115 @@ export default function Receptionist() {
     try {
       const { response } = await api.sendMessage(sid, text);
       addMessage('receptionist', response);
-      setConvState('idle');
+      speakResponse(response);
     } catch {
       addMessage('system', 'I\'m having trouble reaching the system right now.');
       setConvState('error');
     }
-  }, [sessionId, addMessage]);
+  }, [sessionId, addMessage, speakResponse]);
+
+  // ─── Mic Toggle & Real Speech Recognition ─────────────────────────────
+  const handleMicClick = useCallback(async () => {
+    // If speaking, clicking mic interrupts (barge-in)
+    if (convState === 'speaking') {
+      window.speechSynthesis?.cancel();
+      setConvState('idle');
+      return;
+    }
+
+    // If already listening, stop
+    if (convState === 'listening') {
+      recognitionRef.current?.stop();
+      setConvState('idle');
+      setInterimTranscript('');
+      return;
+    }
+
+    if (!SpeechRecognitionAPI) {
+      addMessage('system', 'Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari, or type below.');
+      return;
+    }
+
+    // Ensure session exists
+    if (!sessionId) {
+      try {
+        const { session_id } = await api.createSession();
+        setSessionId(session_id);
+        setSystemStatus(s => ({ ...s, backend: 'healthy' }));
+      } catch {
+        setConvState('error');
+        setSystemStatus(s => ({ ...s, backend: 'error' }));
+        return;
+      }
+    }
+
+    try {
+      const recognition = new SpeechRecognitionAPI();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      finalTextRef.current = '';
+
+      recognition.onstart = () => {
+        setConvState('listening');
+        setInterimTranscript('');
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      recognition.onresult = (event: any) => {
+        let interim = '';
+        let final = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const item = event.results[i];
+          if (item.isFinal) {
+            final += item[0].transcript;
+          } else {
+            interim += item[0].transcript;
+          }
+        }
+        if (interim) {
+          setInterimTranscript(interim);
+        }
+        if (final) {
+          finalTextRef.current = final;
+          setInterimTranscript(final);
+        }
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      recognition.onerror = (event: any) => {
+        console.warn('Speech recognition event:', event.error);
+        if (event.error === 'not-allowed' || event.error === 'permission-denied') {
+          addMessage('system', 'Microphone permission was denied. Please allow microphone access in your browser address bar.');
+          setConvState('error');
+        } else if (event.error === 'no-speech') {
+          setConvState('idle');
+        } else {
+          setConvState('idle');
+        }
+        setInterimTranscript('');
+      };
+
+      recognition.onend = () => {
+        const text = finalTextRef.current?.trim();
+        finalTextRef.current = '';
+        setInterimTranscript('');
+
+        if (text) {
+          handleTextSend(text);
+        } else {
+          setConvState('idle');
+        }
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      console.error('Failed to start speech recognition:', err);
+      setConvState('idle');
+    }
+  }, [convState, sessionId, addMessage, handleTextSend]);
 
   const showDevFallback = import.meta.env.DEV || convState === 'error';
 
@@ -173,7 +305,7 @@ export default function Receptionist() {
 
         {/* Subtitle beneath avatar */}
         <p
-          key={convState}            /* re-animate on state change */
+          key={convState}
           className="max-w-xs text-center text-base font-light animate-fade-in-up"
           style={{ color: 'var(--color-text-muted)' }}
           aria-live="polite"
@@ -188,7 +320,10 @@ export default function Receptionist() {
         style={{ maxWidth: 480 }}
         aria-label="Conversation"
       >
-        <ConversationPanel messages={messages} />
+        <ConversationPanel
+          messages={messages}
+          interimTranscript={interimTranscript}
+        />
       </section>
 
       {/* ─────────────── MIC + TEXT INPUT ─────────────── */}

@@ -174,6 +174,10 @@ class ReceptionistAgent:
         """
         client = self._get_client()
 
+        if not settings.openai_api_key and "mock" not in str(type(client)).lower():
+            logger.info("offline_agent_mode", session_id=session_id)
+            return await self._fallback_chat(session_id, user_message, db, restaurant_id)
+
         messages = [
             {"role": "system", "content": RECEPTIONIST_SYSTEM_PROMPT},
             *history,
@@ -247,6 +251,50 @@ class ReceptionistAgent:
                 state="error",
             )
 
+    async def _fallback_chat(
+        self,
+        session_id: str,
+        user_message: str,
+        db,
+        restaurant_id: int,
+    ) -> TextMessageResponse:
+        """Deterministic grounding fallback when OPENAI_API_KEY is not configured."""
+        import re
+        lowered = user_message.lower()
+
+        if "reserve" in lowered or "reservation" in lowered or "book" in lowered:
+            reply = "We don't take reservations. Aria Kitchen is a walk-in only restaurant. I can check current table availability when you arrive."
+        elif "table" in lowered or "party" in lowered or "seat" in lowered:
+            match = re.search(r"\b(\d+)\b", lowered)
+            party_size = int(match.group(1)) if match else 2
+            zone = "outdoor" if "outdoor" in lowered else ("indoor" if "indoor" in lowered else None)
+            res = await table_service.find_available_table(db, restaurant_id, party_size, zone)
+            if res.get("available"):
+                reply = f"Yes, we have Table #{res['table_number']} available in our {res['zone']} area for a party of {party_size}. Please walk in and we will seat you right away!"
+            else:
+                reply = f"I'm sorry, we do not currently have an available table for a party of {party_size}. You are welcome to walk in and check our waitlist."
+        elif "menu" in lowered or "food" in lowered or "dish" in lowered:
+            menu = await restaurant_service.get_menu(db, restaurant_id)
+            sample_items = [i["name"] for i in menu.get("items", [])[:4]]
+            reply = f"Aria Kitchen features contemporary fine dining! Some of our chef specials include {', '.join(sample_items)}. Would you like to check allergen information?"
+        elif "parking" in lowered:
+            pol = await restaurant_service.get_policy(db, restaurant_id, "parking")
+            reply = pol.get("value", "Complimentary valet parking is available at our main entrance.")
+        elif "pet" in lowered or "dog" in lowered:
+            pol = await restaurant_service.get_policy(db, restaurant_id, "pet_policy")
+            reply = pol.get("value", "Leashed dogs are welcome in our outdoor terrace seating area.")
+        elif "hour" in lowered or "time" in lowered or "open" in lowered or "close" in lowered:
+            reply = "Aria Kitchen is open daily for lunch from 12:00 PM to 3:00 PM and dinner from 7:00 PM to 11:00 PM."
+        else:
+            reply = "Welcome to Aria Kitchen! I can check live table availability, or answer questions about our menu, policies, hours, and parking. How may I help you?"
+
+        return TextMessageResponse(
+            session_id=session_id,
+            response=reply,
+            state="idle",
+        )
+
 
 # Singleton agent instance
 receptionist_agent = ReceptionistAgent()
+

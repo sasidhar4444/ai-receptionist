@@ -3,6 +3,7 @@ import type { ConversationMessage } from '../types/receptionist';
 
 interface ConversationPanelProps {
   messages: ConversationMessage[];
+  interimTranscript?: string;
 }
 
 const ROLE_LABEL: Record<ConversationMessage['role'], string> = {
@@ -43,15 +44,15 @@ const BUBBLE_STYLE: Record<ConversationMessage['role'], React.CSSProperties> = {
 
 /**
  * ConversationPanel — scrollable transcript of the conversation.
- * Auto-scrolls to the latest message. Handles empty state.
+ * Auto-scrolls to the latest message. Handles empty and interim speech states.
  */
-export function ConversationPanel({ messages }: ConversationPanelProps) {
+export function ConversationPanel({ messages, interimTranscript }: ConversationPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to bottom on new messages or speech update
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, interimTranscript]);
 
   return (
     <section
@@ -67,43 +68,70 @@ export function ConversationPanel({ messages }: ConversationPanelProps) {
         backdropFilter: 'blur(12px)',
       }}
     >
-      {messages.length === 0 ? (
+      {messages.length === 0 && !interimTranscript ? (
         <div
           className="flex h-full items-center justify-center"
           role="status"
         >
           <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-            Start speaking to begin the conversation…
+            Tap the microphone and start speaking to begin…
           </p>
         </div>
       ) : (
-        messages.map(msg => (
-          <div
-            key={msg.id}
-            className={`flex flex-col gap-0.5 animate-fade-in-up ${ROLE_STYLE[msg.role]}`}
-          >
-            {msg.role !== 'system' && (
+        <>
+          {messages.map(msg => (
+            <div
+              key={msg.id}
+              className={`flex flex-col gap-0.5 animate-fade-in-up ${ROLE_STYLE[msg.role]}`}
+            >
+              {msg.role !== 'system' && (
+                <span
+                  className="px-2 text-xs font-semibold tracking-wide uppercase"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  {ROLE_LABEL[msg.role]}
+                </span>
+              )}
+              <div
+                className="px-4 py-2.5 text-sm leading-relaxed"
+                style={{
+                  ...BUBBLE_STYLE[msg.role],
+                  color: msg.role === 'system'
+                    ? 'var(--color-text-muted)'
+                    : 'var(--color-text)',
+                  fontSize: msg.role === 'system' ? '0.75rem' : '0.875rem',
+                }}
+              >
+                {msg.text}
+              </div>
+            </div>
+          ))}
+
+          {/* Live speech feedback while user is speaking */}
+          {interimTranscript && (
+            <div className="flex flex-col gap-0.5 animate-pulse text-right">
               <span
                 className="px-2 text-xs font-semibold tracking-wide uppercase"
-                style={{ color: 'var(--color-text-muted)' }}
+                style={{ color: 'var(--color-accent)' }}
               >
-                {ROLE_LABEL[msg.role]}
+                You (Listening…)
               </span>
-            )}
-            <div
-              className="px-4 py-2.5 text-sm leading-relaxed"
-              style={{
-                ...BUBBLE_STYLE[msg.role],
-                color: msg.role === 'system'
-                  ? 'var(--color-text-muted)'
-                  : 'var(--color-text)',
-                fontSize: msg.role === 'system' ? '0.75rem' : '0.875rem',
-              }}
-            >
-              {msg.text}
+              <div
+                className="px-4 py-2.5 text-sm leading-relaxed"
+                style={{
+                  background: 'rgba(124,109,250,0.22)',
+                  border: '1px dashed var(--color-accent)',
+                  borderRadius: '1rem 1rem 0.25rem 1rem',
+                  marginLeft: 'auto',
+                  maxWidth: '78%',
+                  color: 'var(--color-text)',
+                }}
+              >
+                {interimTranscript}
+              </div>
             </div>
-          </div>
-        ))
+          )}
+        </>
       )}
       <div ref={bottomRef} aria-hidden="true" />
     </section>
