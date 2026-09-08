@@ -48,20 +48,22 @@ The LLM never invents table availability, opening hours, prices, menu items, pol
 
 ### 1. Environment Configuration
 
-Copy the example environment file and add your OpenAI API key:
+Copy the example environment file:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` with your own local values (never commit real keys/passwords):
 ```env
-OPENAI_API_KEY=sk-...
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/restaurant_ai
+OPENAI_API_KEY=your_openai_api_key_here
+DATABASE_URL=postgresql://<db_user>:<db_password>@localhost:5433/restaurant_ai
 REDIS_URL=redis://localhost:6379
 RESTAURANT_ID=1
 RAG_SIMILARITY_THRESHOLD=0.75
 ```
+
+> Security note: keep `.env` private and rotate credentials immediately if they are ever exposed.
 
 ### 2. Start PostgreSQL & Redis
 
